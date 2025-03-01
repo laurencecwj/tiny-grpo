@@ -199,7 +199,7 @@ def main():
     # model_name = "meta-llama/Llama-3.2-1B-Instruct"
     model_name = "unsloth/Llama-3.2-1B-Instruct"
     checkpoint_path = Path("./output")
-    checkpoint_interval = 20
+    checkpoint_interval = 200
     train_batch_size = 12
     lr = 5e-6
     kl_weight = 0.01
@@ -233,8 +233,8 @@ def main():
     prompts = read_prompts(
         "data/math_tasks.jsonl",
         predicate=lambda x: len(x["question"]) < 128
-        and x["num_terms"] <= 3
-        and x["num_digits"] <= 3,
+        and x["num_terms"] <= 6
+        and x["num_digits"] <= 6,
         max_rows=64 * 1024,
     )
     print(f"found {len(prompts)} matching prompts")
