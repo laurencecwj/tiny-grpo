@@ -18,7 +18,8 @@ from transformers import (
 )
 from loss import approx_kl_divergence, GRPOLoss
 from replay_buffer import ReplayBuffer, Experience, join_experience_batch
-
+import gc 
+from collections import UserDict
 
 def load_model(
     model_name_or_path: str,
@@ -193,12 +194,13 @@ def read_prompts(
 
 def main():
     seed = 42
-    wandb_project = None  # "tiny_grpo"
+    wandb_project = "tiny_grpo"
     device_index = 0
-    model_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # model_name = "meta-llama/Llama-3.2-1B-Instruct"
+    model_name = "unsloth/Llama-3.2-1B-Instruct"
     checkpoint_path = Path("./output")
     checkpoint_interval = 20
-    train_batch_size = 16
+    train_batch_size = 12
     lr = 5e-6
     kl_weight = 0.01
     clip_eps = 0.2
@@ -250,7 +252,30 @@ def main():
     if wandb_project is None:
         wandb.init(mode="disabled")
     else:
-        wandb.init(project=wandb_project)
+        _cfg = UserDict()
+        _cfg.model_name = model_name
+        _cfg.checkpoint_path = checkpoint_path
+        _cfg.checkpoint_interval = checkpoint_interval
+        _cfg.train_batch_size = train_batch_size
+        _cfg.lr = lr
+        _cfg.kl_weight = kl_weight
+        _cfg.clip_eps = clip_eps
+
+        _cfg.group_size = group_size
+        _cfg.rollouts_per_step = rollouts_per_step
+        _cfg.epochs_per_step = epochs_per_step
+        _cfg.max_norm = max_norm  # gradient clipping
+
+        # rollout params
+        _cfg.max_length = max_length
+        _cfg.top_p = top_p
+        _cfg.temperature = temperature
+
+        _cfg.optimizer = optimizer
+        _cfg.pad_token_id = pad_token_id
+
+        wandb.init(project=wandb_project, config=_cfg.__dict__)
+        del _cfg
 
     for k, prompt_batch in enumerate(prompt_loader):
         rollout_returns = []
@@ -356,6 +381,12 @@ def main():
             and (k + 1) % checkpoint_interval == 0
         ):
             model.save_pretrained(checkpoint_path / f"step_{k}")
+
+        if rollout_returns:
+            del rollout_returns
+        
+        gc.collect()
+        torch.cuda.empty_cache()
 
     if checkpoint_path is not None:
         model.save_pretrained(checkpoint_path / f"step_{k}")

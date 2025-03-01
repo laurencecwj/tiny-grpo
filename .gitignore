@@ -1,0 +1,13 @@
+resources/*.gz
+**/.ipynb_checkpoints
+**/__pycache__
+.vscode
+.DS_Store
+venv/
+.idea/
+*.egg-info/
+**/__cache__
+*.pkl
+build
+registries
+.history
