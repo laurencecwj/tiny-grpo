@@ -200,18 +200,18 @@ def main():
     model_name = "unsloth/Llama-3.2-1B-Instruct"
     checkpoint_path = Path("./output")
     checkpoint_interval = 200
-    train_batch_size = 12
+    train_batch_size = 24
     lr = 5e-6
     kl_weight = 0.01
     clip_eps = 0.2
 
     group_size = 12
-    rollouts_per_step = 32
+    rollouts_per_step = 24 #32
     epochs_per_step = 1
     max_norm = 1.0  # gradient clipping
 
     # rollout params
-    max_length = 1024
+    max_length = 768 # 1024
     top_p = 1.0
     temperature = 1.0
 
@@ -285,6 +285,7 @@ def main():
         questions = prompt_batch["question"]
         answers = prompt_batch["answer"]
 
+        response_length = []
         with torch.no_grad():
             for q, a in zip(questions, answers):
                 sequence_ids, returns, action_mask, completions = rollout(
@@ -302,10 +303,15 @@ def main():
                     f"rollout q='{q}', a='{a}', returns={returns.sum().item():.2f}, replay_buffer_size={len(replay_buffer)}, sequence_ids={sequence_ids.shape}"
                 )
                 rollout_returns.append(returns.cpu())
+                response_length.append(torch.mean(torch.tensor([len(_x) for _x in completions])))
 
                 advantages = group_advantages(returns)
                 attention_mask = sequence_ids != pad_token_id
 
+                torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()
+                gc.collect()
                 log_probs = sequences_log_probs(
                     model=model,
                     sequence_ids=sequence_ids,
@@ -337,7 +343,7 @@ def main():
         torch.cuda.empty_cache()
         episode_return_sum = torch.stack(rollout_returns).sum()
         print(f"returns of step {k}: {episode_return_sum:.4f}")
-        wandb.log({"returns": episode_return_sum})
+        wandb.log({"returns": episode_return_sum, "think_length": torch.mean(response_length).detach().cpu()})
 
         experience_sampler = DataLoader(
             replay_buffer,
@@ -385,8 +391,10 @@ def main():
         if rollout_returns:
             del rollout_returns
         
+        torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.empty_cache()
+        gc.collect()
 
     if checkpoint_path is not None:
         model.save_pretrained(checkpoint_path / f"step_{k}")
