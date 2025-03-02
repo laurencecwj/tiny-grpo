@@ -303,7 +303,7 @@ def main():
                     f"rollout q='{q}', a='{a}', returns={returns.sum().item():.2f}, replay_buffer_size={len(replay_buffer)}, sequence_ids={sequence_ids.shape}"
                 )
                 rollout_returns.append(returns.cpu())
-                response_length.append(torch.mean(torch.tensor([len(_x) for _x in completions])))
+                response_length.append(torch.mean(torch.sum((sequence_ids!=tokenizer.eos_token_id).detach().cpu(), axis=1, dtype=torch.float32)))
 
                 advantages = group_advantages(returns)
                 attention_mask = sequence_ids != pad_token_id
@@ -343,7 +343,7 @@ def main():
         torch.cuda.empty_cache()
         episode_return_sum = torch.stack(rollout_returns).sum()
         print(f"returns of step {k}: {episode_return_sum:.4f}")
-        wandb.log({"returns": episode_return_sum, "think_length": torch.mean(response_length).detach().cpu()})
+        wandb.log({"returns": episode_return_sum, "think_length": torch.mean(torch.tensor(response_length)).detach().cpu()})
 
         experience_sampler = DataLoader(
             replay_buffer,
