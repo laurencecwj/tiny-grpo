@@ -191,7 +191,6 @@ def read_prompts(
             break
     return rows
 
-
 def main():
     seed = 42
     wandb_project = "tiny_grpo"
