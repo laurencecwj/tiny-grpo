@@ -82,7 +82,7 @@ def setup_mistake_policies():
             _policy._setup()
             mistake_policies[_digit] = _policy
 
-def fetch_labels(labels):
+def generate_error_labels(labels):
     # labels: torch.Tensor 
     # labels.shape: torch.Size([batch_size])
     _result = []
@@ -108,12 +108,12 @@ def get_confusion(predictions, labels):
         total += 1
     return correct, total, confusion
 
-def partial_reward(grp_vals, dest):
-    _results = []
-    for _v in grp_vals:
-        _reward, _ = weak_rewards(_v, dest[0])
-        _results.append(_reward)
-    return _results
+# def partial_reward(grp_vals, dest):
+#     _results = []
+#     for _v in grp_vals:
+#         _reward, _ = weak_rewards(_v, dest[0])
+#         _results.append(_reward)
+#     return _results
 
 def weak_rewards(val, label):
     mapped_vals_0 = value_mapper[val]
@@ -124,7 +124,7 @@ def weak_rewards(val, label):
         _rew = torch.mean((torch.tensor(mapped_vals_0) == torch.tensor(mapped_vals_1)).float())
     return _rew, label
 
-def partial_reward_eval(predictions, labels, reward_map_fn = None):
+def eval_rewards(predictions, labels, reward_map_fn = None):
     correct, total, confusion = get_confusion(predictions, labels)
     if reward_map_fn:
         # return (predictions == labels).sum().item()
@@ -140,25 +140,39 @@ def partial_reward_eval(predictions, labels, reward_map_fn = None):
         
     return correct, total, confusion
 
-def calc_rewards(sampled_outputs, labels, partial_observed = False):
-    if not partial_observed:
-        rewards = (sampled_outputs == labels.view(-1, 1)).float()  # Reward = 1 if correct, else 0
-        return rewards
-    # labels: torch.Tensor 
-    # labels.shape: torch.Size([batch_size])
+def train_rewards(sampled_outputs, labels, reward_map_fn = None):
+    real_label_rewards = (sampled_outputs == labels.view(-1, 1)).float()  # Reward = 1 if correct, else 0
+    noisy_label_rewards = None
 
-    _results = []
-    for v1, v2 in zip(sampled_outputs.tolist(), labels.view(-1, 1).tolist()):
-        _results.append(partial_reward(v1, v2))
-    return torch.tensor(_results)
+    if not reward_map_fn:
+        noised_labels = generate_error_labels(labels)
+        noised_labels = noised_labels.to(device)
+        noisy_label_rewards = (sampled_outputs == noised_labels.view(-1, 1)).float()
+    else:
+        # labels: torch.Tensor 
+        # labels.shape: torch.Size([batch_size])
+
+        _results = []
+        for v1, v2 in zip(sampled_outputs.tolist(), labels.view(-1, 1).tolist()):
+            _grp_results = []
+            for _v in v1:
+                _reward, _ = reward_map_fn(_v, v2)
+                _grp_results.append(_reward)
+            _results.append(_grp_results)
+        noisy_label_rewards = torch.tensor(_results)
+
+    return noisy_label_rewards, real_label_rewards
 
 # GRPO Training Function with loss tracking
-def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={}):
+def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={}, start_from=0):
     model.train()
     loss_history = []
     _mean_rewards = [] 
+    _mean_rewards_real = [] 
 
-    for epoch in range(epochs):
+    _saved_path = ''
+
+    for epoch in range(start_from, epochs):
         total_loss = 0
         start_time = time.time()
 
@@ -175,16 +189,17 @@ def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={
             sampled_outputs = torch.cat(sampled_outputs, dim=1)  # Shape: [batch, num_samples]
 
             # Step 2: Compute Rewards
-            labels = fetch_labels(labels)
-            labels = labels.to(device)
+            # labels = fetch_labels(labels)
+            # labels = labels.to(device)
             # rewards = (sampled_outputs == labels.view(-1, 1)).float()  # Reward = 1 if correct, else 0
-            rewards = calc_rewards(sampled_outputs, labels, config['use_partial_observed'])
-            rewards = rewards.to(device)
+            noisy_label_rewards, real_label_rewards = train_rewards(sampled_outputs, labels, weak_rewards if use_partial_observed else None)
+            rewards = noisy_label_rewards.to(device)
 
             # Step 3: Compute Advantage
             mean_reward = rewards.mean(dim=1, keepdim=True)
             advantages = rewards - mean_reward  # Compute relative advantage
             _mean_rewards.append(mean_reward.detach().cpu())
+            _mean_rewards_real.append(real_label_rewards.mean(dim=1, keepdim=True))
 
             # Step 4: Compute Policy Loss
             log_probs = torch.log_softmax(logits, dim=1)
@@ -203,12 +218,17 @@ def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={
         epoch_time = time.time() - start_time
 
         print(f"Epoch {epoch+1}, Loss: {epoch_loss:.4f}, Time: {epoch_time:.2f}s")
-        wandb.log({"epoch": epoch+1, "loss": epoch_loss, "time": epoch_time, "mean_reward": torch.mean(torch.concat(_mean_rewards)).item()})
+        wandb.log({"noisy_mean_reward": torch.mean(torch.concat(_mean_rewards)).item(),
+                   "real_mean_reward": torch.mean(torch.concat(_mean_rewards_real)).item(),
+                   "loss": epoch_loss, "epoch": epoch+1, "time": epoch_time, "lr": optimizer.param_groups[0]['lr']})
+        
+        if epoch % config['save_step'] == 0:
+            _saved_path = save_model(model, optimizer, epoch, loss, config['model_path'])
 
     # save figure
     # Plot Training Loss Curve
     plt.figure(figsize=(8, 5))
-    plt.plot(range(1, epochs + 1), loss_history, marker='o', linestyle='-', color='b', label="GRPO Loss")
+    plt.plot(range(1, epochs - start_from + 1), loss_history, marker='o', linestyle='-', color='b', label="GRPO Loss")
     plt.xlabel("Epochs")
     plt.ylabel("Loss")
     plt.title("GRPO Training Loss Curve")
@@ -217,19 +237,22 @@ def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={
     # plt.show()
     plt.savefig('loss.png')    
 
-    return loss_history, epoch, epoch_loss
+    return loss_history, epoch, epoch_loss, _saved_path
 
 def save_model(model, optimizer, epoch, loss, model_path):
+    _model_path = model_path.replace(".pth", f"-{epoch}.pth")
     torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': loss,
-            }, model_path)
+            }, _model_path)
+    return _model_path
 
 def load_model(model, optimizer, model_path):
     checkpoint = torch.load(model_path, weights_only=True)
     model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']
     loss = checkpoint['loss']    
@@ -249,7 +272,7 @@ def evaluate_model(model, test_loader):
             predictions = torch.argmax(logits, dim=1)  # Get the class with the highest probability
 
             # correct += (predictions == labels).sum().item()
-            _correct, _total, _ = partial_reward_eval(predictions, labels, weak_rewards if use_partial_observed else None)
+            _correct, _total, _ = eval_rewards(predictions, labels, weak_rewards if use_partial_observed else None)
             correct += sum(_correct)
             total += _total #labels.size(0)
 
@@ -273,6 +296,7 @@ def validation(model, transform, config):
 def main(args):
     global map_circle_only, use_partial_observed
     config = {
+        'save_step': 5,
         'batch_size': 64, 
         'group_number': 32, 
         'err_prob': err_prob,
@@ -300,16 +324,17 @@ def main(args):
 
     # Initialize model, optimizer
     model = MNIST_GRPO()
-    optimizer = optim.Adam(model.parameters(), lr=config['lr'])
+    optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
+    epoch = 0
     if args.load:
         model, optimizer, epoch, loss = load_model(model, optimizer, args.load)
-    model.to(device)
+    else:
+        model.to(device)
 
     # Train the model using GRPO and collect loss history
-    _, epoch, loss = train_grpo(model, train_loader, optimizer, epochs=config['epoch'], num_samples=config['group_number'], config=config)
-    save_model(model, optimizer, epoch, loss, config['model_path'])
+    _, epoch, loss, last_saved_path = train_grpo(model, train_loader, optimizer, epochs=config['epoch'], num_samples=config['group_number'], config=config, start_from=epoch)
 
-    model, optimizer, epoch, loss = load_model(model, optimizer, config['model_path'])
+    model, optimizer, epoch, loss = load_model(model, optimizer, last_saved_path)
     validation(model, transform, config)
 
 if __name__ == '__main__':
