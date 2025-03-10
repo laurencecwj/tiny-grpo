@@ -108,13 +108,6 @@ def get_confusion(predictions, labels):
         total += 1
     return correct, total, confusion
 
-# def partial_reward(grp_vals, dest):
-#     _results = []
-#     for _v in grp_vals:
-#         _reward, _ = weak_rewards(_v, dest[0])
-#         _results.append(_reward)
-#     return _results
-
 def weak_rewards(val, label):
     mapped_vals_0 = value_mapper[val]
     mapped_vals_1 = value_mapper[label]
@@ -164,7 +157,8 @@ def train_rewards(sampled_outputs, labels, reward_map_fn = None):
     return noisy_label_rewards, real_label_rewards
 
 # GRPO Training Function with loss tracking
-def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={}, start_from=0):
+def train_grpo(model, train_loader, optimizer, transform,
+               epochs=5, num_samples=6, config={}, start_from=0):
     model.train()
     loss_history = []
     _mean_rewards = [] 
@@ -224,6 +218,7 @@ def train_grpo(model, train_loader, optimizer, epochs=5, num_samples=6, config={
         
         if epoch % config['save_step'] == 0:
             _saved_path = save_model(model, optimizer, epoch, loss, config['model_path'])
+            validation(model, transform, config)
 
     # save figure
     # Plot Training Loss Curve
@@ -332,7 +327,9 @@ def main(args):
         model.to(device)
 
     # Train the model using GRPO and collect loss history
-    _, epoch, loss, last_saved_path = train_grpo(model, train_loader, optimizer, epochs=config['epoch'], num_samples=config['group_number'], config=config, start_from=epoch)
+    _, epoch, loss, last_saved_path = train_grpo(model, train_loader, optimizer, transform,
+                                                 epochs=config['epoch'], num_samples=config['group_number'], 
+                                                 config=config, start_from=epoch)
 
     model, optimizer, epoch, loss = load_model(model, optimizer, last_saved_path)
     validation(model, transform, config)
