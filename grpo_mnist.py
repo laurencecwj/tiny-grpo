@@ -141,6 +141,8 @@ def train_rewards(sampled_outputs, labels, reward_map_fn = None):
         noised_labels = generate_error_labels(labels)
         noised_labels = noised_labels.to(device)
         noisy_label_rewards = (sampled_outputs == noised_labels.view(-1, 1)).float()
+        # test for zero reward but negative punish
+        noisy_label_rewards -= 1.
     else:
         # labels: torch.Tensor 
         # labels.shape: torch.Size([batch_size])
